@@ -29,17 +29,23 @@ class GraphPredictionL1Loss(FairseqCriterion):
             natoms = sample["net_input"]["batched_data"]["x"].shape[1]
         logits = model(**sample["net_input"])
         x=sample["net_input"]["batched_data"]['x']-1
+        x.requires_grad = False
         
         #logits = logits[:, 0, :]
         logits = logits[:,1:].view(logits.size()[0],-1)#modification
         
         #targets = model.get_targets(sample, [logits])
         targets = model.get_targets(sample, [logits])[:,0:logits.size()[1]][: logits.size(0)]#modification
+        targets.requires_grad = False
         logits = logits.view(logits.size()[0],-1,2)#extra modification
         targets = targets.view(targets.size()[0],-1,2)#extra modification
-
-        logits=torch.tensor(targets!=0,dtype=int)*logits#extra modification
-        x=torch.tensor(targets!=0,dtype=int)*x#extra modification
+        
+        
+        nonzero=torch.tensor(targets!=0, dtype=int)#extra modification
+        nonzero.requires_grad = False#extra modification
+        logits=nonzero*logits#extra modification
+        x=x[:,:,0:2]
+        x=nonzero*x#extra modification
         
         loss_iou=0
         
@@ -49,33 +55,15 @@ class GraphPredictionL1Loss(FairseqCriterion):
             boxes=(torch.stack((logits[i,:,0]-x[i,:,0]/2,logits[i,:,1]-x[i,:,1]/2,logits[i,:,0]+x[i,:,0]/2,logits[i,:,1]+x[i,:,1]/2),1))
             inter, union=_box_inter_union(boxes,boxes)
             inter, union=inter[targets[i,:,0]!=0][:,targets[i,:,0]!=0], union[targets[i,:,0]!=0][:,targets[i,:,0]!=0]
-            loss_iou=loss_iou+(torch.mean((inter/union))-1/torch.sum(targets[i,:,0]!=0))**0.5
-       
-        #print(loss_iou)
+            #loss_iou=loss_iou+(torch.mean(inter/union)-1/torch.sum(x[i,:,0]!=0))**0.5
+            if torch.sum(union)!=0:
+              #loss_iou=loss_iou+(torch.sum(inter)-torch.sum(torch.diagonal(inter)))/(torch.sum(union)-torch.sum(torch.diagonal(union)))
+              loss_iou=loss_iou+torch.sum(inter)/torch.sum(union)
+              #print('iou', (torch.sum(inter)-torch.sum(torch.diagonal(inter)))/(torch.sum(union)-torch.sum(torch.diagonal(union))))
         
-        
-        
-        '''
-        for i in range(x.size()[1]):
-            for j in range(i+1,x.size()[1]):
-                intersect_width=torch.maximum(x[:,i,0]/2+x[:,j,0]/2-torch.abs(logits[:,i,0]-logits[:,j,0]), torch.tensor(0))
-                intersect_height=torch.maximum(x[:,j,1]/2+x[:,j,1]/2-torch.abs(logits[:,i,1]-logits[:,j,1]), torch.tensor(0))
-                box_area=x[:,i,0]*x[:,i,1]+x[:,j,0]*x[:,j,1]
-                intersect_area=intersect_width*intersect_height
-                iou=intersect_area/(box_area-intersect_area)
-                iou[torch.isinf(iou)]=100
-                iou[torch.isnan(iou)]=0
-                loss_iou=loss_iou+torch.mean(iou)
-        loss_iou=loss_iou/(x.size()[1]**2-x.size()[1])
-        #print(loss_iou)
-        #print(intersect_area/(2*box_area-intersect_area).size())
-        '''
-        
-        
-        #loss = nn.L1Loss(reduction="sum")(logits, targets[: logits.size(0)])
+        #print(targets)
+        #print(logits)
         loss = nn.L1Loss(reduction="sum")(logits, targets)/logits.size()[1]/logits.size()[2]+weight_iou*loss_iou#modification
-        #loss = loss_iou
-        #print(loss)
         logging_output = {
             "loss": loss.data,
             "sample_size": logits.size(0),
